@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import math
 import io
 from pathlib import Path
 from typing import Dict, List, Iterable, Union
@@ -88,13 +89,14 @@ def make_correspondance(args: Arguments):
 
     with open(args.csv, newline="") as f:
         reader = csv.DictReader(f, delimiter="\t", fieldnames=("caption", "url"))
+        per_split = math.ceil(args.num_rows / args.num_proc)
 
         for proc_id in trange(args.num_proc):
             correspondance_file = (
                 args.correspondance / f"{args.csv.stem}.part-{proc_id}.tsv"
             )
             with open(correspondance_file, "w") as fid:
-                for row, _ in zip(reader, range(args.num_rows // args.num_proc)):
+                for row, _ in zip(reader, range(per_split)):
                     url = args.image_folder / str(proc_id) / get_path(row["url"])
                     url.parent.mkdir(exist_ok=True, parents=True)
                     fid.write("\t".join([row["caption"], row["url"], str(url)]))
