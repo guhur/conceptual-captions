@@ -6,7 +6,6 @@ import hashlib
 import csv
 import urllib.error
 import urllib.request
-import shutil
 from multiprocessing.pool import Pool
 from tqdm.auto import tqdm, trange
 import argtyped
@@ -18,15 +17,10 @@ socket.setdefaulttimeout(1)
 class Arguments(argtyped.Arguments):
     csv: Path
     num_proc: int = 5
-    start: int = 0
     correspondance: Path = Path("correspondance")
     image_folder: Path = Path("images")
-    end: int = -1
     num_rows: int = 3318333
     chunksize: int = 128
-
-    def last(self) -> int:
-        return self.num_proc if self.end == -1 else self.end + 1
 
 
 def get_path(url: str) -> str:
@@ -79,7 +73,9 @@ def run_downloader(args: Arguments):
     with Pool(args.num_proc) as pool:
         list(
             pool.imap_unordered(
-                image_downloader, args.correspondance.iterdir(), chunksize=1,
+                image_downloader,
+                args.correspondance.iterdir(),
+                chunksize=1,
             )
         )
 
@@ -90,7 +86,7 @@ def make_correspondance(args: Arguments):
     """
     args.correspondance.mkdir(parents=True)
 
-    with open(args.csv, "r") as f:
+    with open(args.csv, newline="") as f:
         reader = csv.DictReader(f, delimiter="\t", fieldnames=("caption", "url"))
 
         for proc_id in trange(args.num_proc):
