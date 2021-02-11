@@ -86,7 +86,7 @@ def image_downloader(dataset_sub):
                 path = subdir / filename
                 path = download_url(row["url"], type_unknown, path)
             except:
-                pass
+                path = 'N/A'
             fid.write("\t".join([row["caption"], row["url"], str(path)]))
             fid.write("\n")
 
