@@ -11,8 +11,16 @@ from multiprocessing.pool import Pool
 from tqdm.auto import tqdm, trange
 import argtyped
 import socket
+import signal
 
 socket.setdefaulttimeout(1)
+
+# Intercept Ctrl-C to exit gracefully
+stop = False
+def signal_handler(signal_received, frame):
+    global stop
+    stop = True
+signal.signal(signal.SIGINT, signal_handler)
 
 
 class Arguments(argtyped.Arguments):
@@ -81,6 +89,8 @@ def image_downloader(dataset_sub):
 
     with open(correspondance_file, "w") as fid:
         for row in tqdm(rows):
+            if stop:
+                break
             try:
                 filename, type_unknown = get_filename(row["url"])
                 path = subdir / filename
