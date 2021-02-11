@@ -1,70 +1,107 @@
 # -*- coding: utf-8 -*-
-import math
 import io
 from pathlib import Path
-from typing import Dict, List, Iterable, Union
+from typing import Dict, List, Iterable, Union, Tuple
 import hashlib
 import csv
 import urllib.error
 import urllib.request
+import shutil
 from multiprocessing.pool import Pool
 from tqdm.auto import tqdm, trange
 import argtyped
 import socket
+import signal
 
 socket.setdefaulttimeout(1)
+
+# Intercept Ctrl-C to exit gracefully
+stop = False
+def signal_handler(signal_received, frame):
+    global stop
+    stop = True
+signal.signal(signal.SIGINT, signal_handler)
 
 
 class Arguments(argtyped.Arguments):
     csv: Path
     num_proc: int = 5
+    num_subdir: int = 40
     correspondance: Path = Path("correspondance")
     image_folder: Path = Path("images")
     num_rows: int = 3318333
-    chunksize: int = 128
 
+def check_type(t: str) -> Tuple[str, bool]:
+    if t == "jpeg":
+        t = "jpg"
+    if t not in ("jpg", "png", "gif"):
+        t = "unk"
+    return (t, t == "unk")
 
-def get_path(url: str) -> str:
-    url = url.split("?")[0].split("&")[0]
+def get_filename(url: str) -> Tuple[str, bool]:
+    url = url.split("?")[0].split("&")[0].split(";")[0]
     stem = hashlib.sha1(str(url).encode())
 
-    suffix = Path(url).suffix.strip()
-    if suffix in (""):
-        suffix = ".jpg"
+    suffix, type_unknown = check_type(Path(url).suffix.strip().strip('.').lower())
 
-    return f"{stem.hexdigest()}{suffix}"
+    return (f"{stem.hexdigest()}.{suffix}", type_unknown)
 
 
-def download_url(url: str, dest: Union[str, Path]):
+def download_url(url: str, type_unknown: bool, dest: Union[str, Path]) -> Union[str, Path]:
     dest = Path(dest)
     if dest.is_file():
-        return
+        return dest
 
-    urllib.request.urlretrieve(url, dest)
+    if type_unknown:
+        for suffix in (".jpg", ".png", ".gif"):
+            new_dest = dest.with_suffix(suffix)
+            if new_dest.is_file():
+                return new_dest
 
+    _, headers = urllib.request.urlretrieve(url, dest)
 
-def image_downloader(correspondance: Path):
+    # Try to guess if the type is unknown
+    if type_unknown:
+        suffix, type_unknown = check_type(headers.get_content_subtype())
+
+        if type_unknown and headers.get_filename() is not None:
+            suffix, type_unknown = check_type(Path(headers.get_filename()).suffix.strip().strip('.').lower())
+
+        if not type_unknown:
+            new_dest = dest.with_suffix('.{}'.format(suffix))
+            shutil.move(dest, new_dest)
+            dest = new_dest
+
+    return dest
+
+def image_downloader(dataset_sub):
     """
     Input:
     param: img_url  str (Image url)
     Tries to download the image url and use name provided in headers. Else it randomly picks a name
     """
-    with open(correspondance, "r") as f:
-        num_rows = sum(1 for _ in f)
+    subdir_id, rows = dataset_sub
 
-    with open(correspondance, newline="") as f:
-        reader = csv.DictReader(
-            f, delimiter="\t", fieldnames=("caption", "url", "location")
-        )
+    subdir = args.image_folder / str(subdir_id)
+    subdir.mkdir(exist_ok=True, parents=True)
 
-        for row in tqdm(reader, total=num_rows):
+    correspondance_file = args.correspondance / f"{args.csv.stem}.part-{subdir_id}.tsv"
+
+    with open(correspondance_file, "w") as fid:
+        for row in tqdm(rows):
+            if stop:
+                break
             try:
-                download_url(row["url"], Path(row["location"]))
-            except:  # OSError:
-                continue
+                filename, type_unknown = get_filename(row["url"])
+                path = subdir / filename
+                path = download_url(row["url"], type_unknown, path)
+            except:
+                path = 'N/A'
+            fid.write("\t".join([row["caption"], row["url"], str(path)]))
+            fid.write("\n")
 
 
-def run_downloader(args: Arguments):
+def run_downloader(args: Arguments, dataset):
     """
     Inputs:
         process: (int) number of process to run
@@ -75,43 +112,46 @@ def run_downloader(args: Arguments):
         list(
             pool.imap_unordered(
                 image_downloader,
-                args.correspondance.iterdir(),
+                dataset,
                 chunksize=1,
             )
         )
 
 
-def make_correspondance(args: Arguments):
+def split_dataset(args: Arguments):
     """
-    It adds to the CSV file to location of the files
+    Split the dataset into subdirectories
     """
-    args.correspondance.mkdir(parents=True)
+    num_rows_sub = args.num_rows // args.num_subdir
+    num_subdir_extra = args.num_rows % args.num_subdir
+    subdir_id = 0
+    n = 0
+    dataset = []
+    dataset_sub = []
 
-    with open(args.csv, newline="") as f:
+    with open(args.csv, "r") as f:
         reader = csv.DictReader(f, delimiter="\t", fieldnames=("caption", "url"))
-        per_split = math.ceil(args.num_rows / args.num_proc)
 
-        for proc_id in trange(args.num_proc):
-            correspondance_file = (
-                args.correspondance / f"{args.csv.stem}.part-{proc_id}.tsv"
-            )
-            with open(correspondance_file, "w") as fid:
-                for row, _ in zip(reader, range(per_split)):
-                    url = args.image_folder / str(proc_id) / get_path(row["url"])
-                    url.parent.mkdir(exist_ok=True, parents=True)
-                    fid.write("\t".join([row["caption"], row["url"], str(url)]))
-                    fid.write("\n")
+        for row in reader:
+            dataset_sub.append(row)
+            n += 1
+            if (n == num_rows_sub + (1 if subdir_id < num_subdir_extra else 0)):
+                dataset.append((subdir_id, dataset_sub))
+                n = 0
+                dataset_sub = []
+                subdir_id += 1
+
+    assert(len(dataset) == args.num_subdir and len(dataset_sub) == 0)
+
+    return dataset
 
 
 if __name__ == "__main__":
     args = Arguments()
     print(args.to_string(width=80))
 
-    if not args.correspondance.is_dir():
-        print("Making correspondance")
-        make_correspondance(args)
+    print("Splitting the dataset")
+    dataset = split_dataset(args)
 
-    # assert len(list(args.correspondance.iterdir())) == args.num_proc
-
-    # image_downloader(list(args.correspondance.iterdir())[0])
-    run_downloader(args)
+    args.correspondance.mkdir(parents=True)
+    run_downloader(args, dataset)
