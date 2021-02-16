@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 import shutil
 from multiprocessing.pool import Pool
+from multiprocessing import RLock, current_process
 from tqdm.auto import tqdm, trange
 import argtyped
 import socket
@@ -88,7 +89,10 @@ def image_downloader(dataset_sub):
     correspondance_file = args.correspondance / f"{args.csv.stem}.part-{subdir_id}.tsv"
 
     with open(correspondance_file, "w") as fid:
-        for row in tqdm(rows):
+        for row in tqdm(rows,
+                        desc="#{0}: ".format(subdir_id),
+                        position=current_process()._identity[0]-1,
+                        leave=True):
             if stop:
                 break
             try:
@@ -108,7 +112,9 @@ def run_downloader(args: Arguments, dataset):
         images_url:(list) list of images url
     """
     print(f"Running {args.num_proc} process")
-    with Pool(args.num_proc) as pool:
+    with Pool(args.num_proc,
+              initializer=tqdm.set_lock,
+              initargs=(tqdm.get_lock(),)) as pool:
         list(
             pool.imap_unordered(
                 image_downloader,
